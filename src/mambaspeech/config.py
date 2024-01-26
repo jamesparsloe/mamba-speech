@@ -8,6 +8,7 @@ class TrainConfig(BaseModel):
 
     batch_size: int = 64
     lr: float = 3e-4
+    gradient_accumulation_steps: int = 1
 
     warmup_steps: int = 1_000
     steps: int = 100_000
