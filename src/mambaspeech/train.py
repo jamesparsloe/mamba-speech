@@ -112,6 +112,7 @@ def main(config_path: str, edit: bool):
     dp = (
         to_iter_datapipe(ds)
         .map(lambda x: rearrange(x[0], "C T -> T C"))
+        .cycle()
         .shuffle()
         .batch(train_config.batch_size, drop_last=True)
         .collate(collate)

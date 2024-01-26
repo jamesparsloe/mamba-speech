@@ -10,7 +10,7 @@ class TrainConfig(BaseModel):
     lr: float = 3e-4
     gradient_accumulation_steps: int = 1
 
-    warmup_steps: int = 10_000
+    warmup_steps: int = 4_000
     steps: int = 100_000
 
     weight_decay: float = 0.1
