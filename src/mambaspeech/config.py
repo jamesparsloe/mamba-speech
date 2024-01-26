@@ -6,11 +6,11 @@ from .model import MambaSpeechConfig
 class TrainConfig(BaseModel):
     seed: int = 42
 
-    batch_size: int = 64
+    batch_size: int = 128
     lr: float = 3e-4
     gradient_accumulation_steps: int = 1
 
-    warmup_steps: int = 1_000
+    warmup_steps: int = 10_000
     steps: int = 100_000
 
     weight_decay: float = 0.1
@@ -19,7 +19,7 @@ class TrainConfig(BaseModel):
 
     val_items: int = 10
     val_every: int = 5_000
-    checkpoint_every: int = 5_000
+    checkpoint_every: int = 2_000
     log_every: int = 10
 
 

@@ -22,6 +22,33 @@ from .constants import CACHE_DIR
 from .utils import seed_all, to_iter_datapipe, warmup_then_cosine_decay
 
 
+def configure_optimizers(self, *, weight_decay, lr: float, betas):
+    # start with all of the candidate parameters
+    param_dict = {pn: p for pn, p in self.named_parameters()}
+    # filter out those that do not require grad
+    param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
+    # create optim groups. Any parameters that is 2D will be weight decayed, otherwise no.
+    # i.e. all weight tensors in matmuls + embeddings decay, all biases and layernorms don't.
+    decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
+    nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
+    optim_groups = [
+        {"params": decay_params, "weight_decay": weight_decay},
+        {"params": nodecay_params, "weight_decay": 0.0},
+    ]
+    num_decay_params = sum(p.numel() for p in decay_params)
+    num_nodecay_params = sum(p.numel() for p in nodecay_params)
+    print(
+        f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters"
+    )
+    print(
+        f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters"
+    )
+    # Create AdamW optimizer and use the fused version if it is available
+    optimizer = torch.optim.AdamW(optim_groups, lr=lr, betas=betas, fused=True)
+
+    return optimizer
+
+
 def collate(waveforms: list[Tensor]):
     waveforms = pad_sequence(waveforms, batch_first=True)
     waveforms = rearrange(waveforms, "B T C -> B C T")
@@ -85,7 +112,7 @@ def main(config_path: str, edit: bool):
     dp = (
         to_iter_datapipe(ds)
         .map(lambda x: rearrange(x[0], "C T -> T C"))
-        .shuffle(buffer_size=100)
+        .shuffle()
         .batch(train_config.batch_size, drop_last=True)
         .collate(collate)
     )
@@ -118,17 +145,14 @@ def main(config_path: str, edit: bool):
     )
     min_lr = train_config.lr / 10.0
 
-    get_lr = partial(
-        warmup_then_cosine_decay,
-        warmup_steps=train_config.warmup_steps,
-        steps=train_config.steps,
-        min_lr=min_lr,
-        max_lr=train_config.lr,
-    )
-
     model = MambaLMHeadModel(mamba_config).to(device)
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
+
+    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+    print(f"{n_parameters / 1e6:.1f}M parameters")
+
+    optimizer = configure_optimizers(
+        model,
         lr=min_lr,
         betas=train_config.betas,
         weight_decay=train_config.weight_decay,
@@ -139,6 +163,17 @@ def main(config_path: str, edit: bool):
     )
     quantizer_offsets = rearrange(quantizer_offsets, "Q -> Q 1")
 
+    get_lr = partial(
+        warmup_then_cosine_decay,
+        warmup_steps=train_config.warmup_steps,
+        steps=train_config.steps,
+        min_lr=min_lr,
+        max_lr=train_config.lr,
+    )
+
+    waveforms = next(dl)
+    waveforms = waveforms.to(device, non_blocking=True)
+
     t1 = time.perf_counter()
 
     while step < train_config.steps:
@@ -147,33 +182,36 @@ def main(config_path: str, edit: bool):
         for param_group in optimizer.param_groups:
             param_group["lr"] = lr
 
-        waveforms = next(dl)
-        waveforms = waveforms.to(device, non_blocking=True)
+        for micro_step in range(train_config.gradient_accumulation_steps):
+            with torch.no_grad():
+                waveforms = resample(waveforms)
+                waveforms = codec.preprocess(waveforms, dac_sample_rate)
+                _, audio_tokens, _, _, _ = codec.encode(waveforms)
 
-        with torch.no_grad():
-            waveforms = resample(waveforms)
-            waveforms = codec.preprocess(waveforms, dac_sample_rate)
-            _, audio_tokens, _, _, _ = codec.encode(waveforms)
+                audio_tokens = audio_tokens[:, : model_config.n_quantizers]
+                audio_tokens = audio_tokens + quantizer_offsets
 
-            audio_tokens = audio_tokens[:, : model_config.n_quantizers]
-            audio_tokens = audio_tokens + quantizer_offsets
+                B, Q, T = audio_tokens.size()
+                audio_tokens = flatten_audio_tokens(audio_tokens)
+                input_ids = F.pad(audio_tokens, (1, 0), value=bos_token_id)
+                target_ids = F.pad(audio_tokens, (0, 1), value=eos_token_id)
 
-            B, Q, T = audio_tokens.size()
-            audio_tokens = flatten_audio_tokens(audio_tokens)
-            input_ids = F.pad(audio_tokens, (1, 0), value=bos_token_id)
-            target_ids = F.pad(audio_tokens, (0, 1), value=eos_token_id)
+            with torch.amp.autocast(dtype=amp_dtype, device_type="cuda", enabled=True):
+                output = model(input_ids)
+                logits = output.logits
 
-        with torch.amp.autocast(dtype=amp_dtype, device_type="cuda", enabled=True):
-            output = model(input_ids)
-            logits = output.logits
+                loss = F.cross_entropy(
+                    logits.view(-1, logits.size(-1)),
+                    target_ids.view(-1),
+                    ignore_index=pad_token_id,
+                )
 
-            loss = F.cross_entropy(
-                logits.view(-1, logits.size(-1)),
-                target_ids.view(-1),
-                ignore_index=pad_token_id,
-            )
+                loss = loss / train_config.gradient_accumulation_steps
 
-        loss.backward()
+            waveforms = next(dl)
+            waveforms = waveforms.to(device, non_blocking=True)
+
+            loss.backward()
 
         grad_norm = torch.nn.utils.clip_grad_norm_(
             model.parameters(), train_config.max_norm
