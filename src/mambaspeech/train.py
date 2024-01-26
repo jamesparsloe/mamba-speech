@@ -50,9 +50,10 @@ def configure_optimizers(self, *, weight_decay, lr: float, betas):
 
 
 def collate(waveforms: list[Tensor]):
+    lengths = torch.tensor([w.size(0) for w in waveforms])
     waveforms = pad_sequence(waveforms, batch_first=True)
     waveforms = rearrange(waveforms, "B T C -> B C T")
-    return waveforms
+    return {"waveforms": waveforms, "waveforms_lengths": lengths}
 
 
 def flatten_audio_tokens(audio_tokens: Tensor):
@@ -65,6 +66,18 @@ def unflatten_audio_tokens(audio_tokens: Tensor, T: int):
     audio_tokens = rearrange(audio_tokens, "B (T Q) -> B T Q", T=T)
     audio_tokens = rearrange(audio_tokens, "B T Q -> B Q T")
     return audio_tokens
+
+
+def set_eos_id(t: Tensor, eos_id: int, pad_id: int):
+    eos_indices = ((t == pad_id).cumsum(dim=-1) == 0).sum(dim=-1, keepdim=True).long()
+
+    batch_range = torch.arange(t.shape[0], device=t.device, dtype=torch.int64)
+    batch_range = rearrange(batch_range, "... -> ... 1")
+
+    t = F.pad(t, (0, 1), value=pad_id)
+    t[batch_range, eos_indices] = eos_id
+
+    return t
 
 
 @click.command()
@@ -97,23 +110,28 @@ def main(config_path: str, edit: bool):
     os.makedirs(run_dir, exist_ok=True)
 
     # NOTE do this next
-    # ds = torchaudio.datasets.LJSPEECH(CACHE_DIR, download=True)
-    ds_sample_rate = 16000
+    # ds_sample_rate = 16000
+    # ds = torchaudio.datasets.SPEECHCOMMANDS(CACHE_DIR, download=True)
+
+    ds_sample_rate = 22050
+    ds = torchaudio.datasets.LJSPEECH(CACHE_DIR, download=True)
+
     dac_sample_rate = 44100
     resample = Resample(
         orig_freq=ds_sample_rate,
         new_freq=dac_sample_rate,
     ).to(device)
 
+    resample_factor = dac_sample_rate / ds_sample_rate
+
     dac_path = dac.utils.download(model_type="44khz")
     codec = dac.DAC.load(dac_path).eval().to(device)
 
-    ds = torchaudio.datasets.SPEECHCOMMANDS(CACHE_DIR, download=True)
     dp = (
         to_iter_datapipe(ds)
         .map(lambda x: rearrange(x[0], "C T -> T C"))
         .cycle()
-        .shuffle()
+        .shuffle(buffer_size=10 * train_config.batch_size)
         .batch(train_config.batch_size, drop_last=True)
         .collate(collate)
     )
@@ -172,8 +190,11 @@ def main(config_path: str, edit: bool):
         max_lr=train_config.lr,
     )
 
-    waveforms = next(dl)
+    batch = next(dl)
+    waveforms = batch["waveforms"]
+    waveforms_lengths = batch["waveforms_lengths"]
     waveforms = waveforms.to(device, non_blocking=True)
+    waveforms_lengths = waveforms_lengths.to(device, non_blocking=True)
 
     t1 = time.perf_counter()
 
@@ -185,17 +206,34 @@ def main(config_path: str, edit: bool):
 
         for micro_step in range(train_config.gradient_accumulation_steps):
             with torch.no_grad():
+                length_before = waveforms.size(-1)
                 waveforms = resample(waveforms)
+                ratio = waveforms.size(-1) / length_before
                 waveforms = codec.preprocess(waveforms, dac_sample_rate)
                 _, audio_tokens, _, _, _ = codec.encode(waveforms)
 
-                audio_tokens = audio_tokens[:, : model_config.n_quantizers]
-                audio_tokens = audio_tokens + quantizer_offsets
+                audio_tokens_lengths = (
+                    ratio * waveforms_lengths / codec.hop_length
+                ).ceil()
 
                 B, Q, T = audio_tokens.size()
+
+                padding_mask = torch.arange(
+                    T, device=device
+                ) >= audio_tokens_lengths.unsqueeze(-1)
+                padding_mask = rearrange(padding_mask, "B T -> B 1 T")
+
+                audio_tokens = audio_tokens[:, : model_config.n_quantizers]
+                audio_tokens = audio_tokens + quantizer_offsets
+                
+                # fill with pad token **after** applying offsets
+                audio_tokens = audio_tokens.masked_fill(padding_mask, pad_token_id)
+
                 audio_tokens = flatten_audio_tokens(audio_tokens)
                 input_ids = F.pad(audio_tokens, (1, 0), value=bos_token_id)
-                target_ids = F.pad(audio_tokens, (0, 1), value=eos_token_id)
+                target_ids = set_eos_id(audio_tokens, eos_token_id, pad_token_id)
+
+
 
             with torch.amp.autocast(dtype=amp_dtype, device_type="cuda", enabled=True):
                 output = model(input_ids)
@@ -209,8 +247,11 @@ def main(config_path: str, edit: bool):
 
                 loss = loss / train_config.gradient_accumulation_steps
 
-            waveforms = next(dl)
+            batch = next(dl)
+            waveforms = batch["waveforms"]
+            waveforms_lengths = batch["waveforms_lengths"]
             waveforms = waveforms.to(device, non_blocking=True)
+            waveforms_lengths = waveforms_lengths.to(device, non_blocking=True)
 
             loss.backward()
 

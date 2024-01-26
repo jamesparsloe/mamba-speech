@@ -6,7 +6,8 @@ from .model import MambaSpeechConfig
 class TrainConfig(BaseModel):
     seed: int = 42
 
-    batch_size: int = 128
+    # batch_size: int = 128
+    batch_size: int = 16
     lr: float = 3e-4
     gradient_accumulation_steps: int = 1
 

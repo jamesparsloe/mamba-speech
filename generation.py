@@ -5,6 +5,7 @@ from mamba_ssm.utils.generation import (
     InferenceParams,
     modify_logits_for_top_p_filtering,
     modify_logit_for_repetition_penalty,
+    update_graph_cache,
 )
 import json
 import torch
@@ -13,6 +14,7 @@ from einops import rearrange
 import dac
 import torchaudio
 import time
+import gradio as gr
 
 
 def unflatten_audio_tokens(audio_tokens: Tensor, T: int):
@@ -85,7 +87,22 @@ def decode(
     batch_size, seqlen_og = input_ids.shape
     teacher_output_len = 0
 
-    inference_params = InferenceParams(max_seqlen=max_length, max_batch_size=batch_size)
+    if cg:
+        if not hasattr(model, "_decoding_cache"):
+            model._decoding_cache = None
+        model._decoding_cache = update_graph_cache(
+            model,
+            model._decoding_cache,
+            batch_size,
+            seqlen_og,
+            max_length,
+        )
+        inference_params = model._decoding_cache.inference_params
+        inference_params.reset(max_length, batch_size)
+    else:
+        inference_params = InferenceParams(
+            max_seqlen=max_length, max_batch_size=batch_size
+        )
 
     def get_logits(input_ids, inference_params):
         decoding = inference_params.seqlen_offset > 0
@@ -159,68 +176,87 @@ def decode(
     return output_cls(sequences=torch.cat(sequences, dim=1), scores=tuple(scores))
 
 
-if __name__ == "__main__":
-    device = "cuda"
+device = "cuda"
 
-    dac_path = dac.utils.download(model_type="44khz")
-    codec = dac.DAC.load(dac_path).eval().to(device)
+dac_path = dac.utils.download(model_type="44khz")
+codec = dac.DAC.load(dac_path).eval().to(device)
 
-    config_path = "runs/07gd8g19/002000/config.json"
-    checkpoint_path = "runs/07gd8g19/002000/pytorch_model.bin"
+print(codec.hop_length)
 
-    with open(config_path, "r") as f:
-        config = MambaConfig(**json.load(f))
+# config_path = "runs/07gd8g19/002000/config.json"
+# checkpoint_path = "runs/07gd8g19/002000/pytorch_model.bin"
 
-    state_dict = torch.load(checkpoint_path)
+config_path = "runs/t8estdri/004000/config.json"
+checkpoint_path = "runs/t8estdri/004000/pytorch_model.bin"
 
-    model = MambaLMHeadModel(config)
-    _ = model.load_state_dict(state_dict)
-    model = model.to(device).eval()
+with open(config_path, "r") as f:
+    config = MambaConfig(**json.load(f))
 
-    codebook_size = 1024
-    n_quantizers = 3
-    n_tokens = codebook_size * n_quantizers
-    bos_token_id = n_tokens
+state_dict = torch.load(checkpoint_path)
 
-    n = 10
+model = MambaLMHeadModel(config)
+_ = model.load_state_dict(state_dict)
+model = model.to(device).eval()
+
+codebook_size = 1024
+n_quantizers = 3
+n_tokens = codebook_size * n_quantizers
+bos_token_id = n_tokens
+
+
+# print(generated.shape)
+
+
+def generate(temperature: float, top_k: int):
     id = int(time.time())
-    top_k = 64
-    temperature = 1.0
 
-    for i in range(n):
-        input_ids = torch.tensor([[bos_token_id]], dtype=torch.int64, device=device)
+    input_ids = torch.tensor([[bos_token_id]], dtype=torch.int64, device=device)
 
-        frame_rate = 86.1
-        T = int(frame_rate)
-        max_length = n_quantizers * T + 1  # we'll knock off the bos token
+    frame_rate = 86.1
+    T = int(frame_rate)
+    max_length = n_quantizers * T + 1  # we'll knock off the bos token
 
-        amp_dtype = torch.bfloat16
+    amp_dtype = torch.bfloat16
 
-        # with torch.amp.autocast(dtype=amp_dtype, device_type="cuda", enabled=True):
-        out = decode(input_ids, model, max_length, top_k=top_k, temperature=temperature)
+    # with torch.amp.autocast(dtype=amp_dtype, device_type="cuda", enabled=True):
+    out = decode(
+        input_ids, model, max_length, top_k=top_k, temperature=temperature, cg=True
+    )
 
-        audio_tokens = out.sequences[..., 1:]
-        audio_tokens = unflatten_audio_tokens(audio_tokens, T)
+    audio_tokens = out.sequences[..., 1:]
+    audio_tokens = unflatten_audio_tokens(audio_tokens, T)
 
-        quantizer_offsets = codebook_size * torch.arange(n_quantizers, device=device)
-        quantizer_offsets = rearrange(quantizer_offsets, "Q -> Q 1")
+    quantizer_offsets = codebook_size * torch.arange(n_quantizers, device=device)
+    quantizer_offsets = rearrange(quantizer_offsets, "Q -> Q 1")
 
-        audio_tokens = audio_tokens - quantizer_offsets
-        print(audio_tokens)
+    audio_tokens = audio_tokens - quantizer_offsets
+    print(audio_tokens)
 
-        # TODO should mask the logits out depending on which codebook we're decoding in decode
-        audio_tokens = torch.where(audio_tokens < 1024, audio_tokens, 0)
-        audio_tokens = torch.where(audio_tokens > 0, audio_tokens, 0)
+    # TODO should mask the logits out depending on which codebook we're decoding in decode
+    audio_tokens = torch.where(audio_tokens < 1024, audio_tokens, 0)
+    audio_tokens = torch.where(audio_tokens > 0, audio_tokens, 0)
 
-        print(audio_tokens)
+    print(audio_tokens)
 
-        with torch.inference_mode():
-            z, _, _ = codec.quantizer.from_codes(audio_tokens)
-            waveform = codec.decode(z)
+    with torch.inference_mode():
+        z, _, _ = codec.quantizer.from_codes(audio_tokens)
+        waveform = codec.decode(z)
 
-        waveform = rearrange(waveform, "1 C T -> C T").cpu()
-        torchaudio.save(
-            f"{id}-{i}-{temperature=}-{top_k=}.wav", waveform, codec.sample_rate
-        )
+    waveform = rearrange(waveform, "1 C T -> C T").cpu()
+    path = f"{id}-{temperature=}-{top_k=}.wav"
+    torchaudio.save(path, waveform, codec.sample_rate)
 
-    # print(generated.shape)
+    return path
+
+
+demo = gr.Interface(
+    fn=generate,
+    inputs=[
+        gr.Slider(minimum=0.0, maximum=1.0, step=0.01, value=1.0, label="temperature"),
+        gr.Slider(minimum=1, maximum=1024, step=1, value=1024, label="top-k"),
+    ],
+    outputs=gr.Audio(),
+)
+
+
+demo.launch(debug=True)
