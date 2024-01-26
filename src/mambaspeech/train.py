@@ -7,7 +7,6 @@ import dac
 import torch
 import torch.nn.functional as F
 import torchaudio
-import wandb
 import yaml
 from einops import rearrange
 from mamba_ssm.models.mixer_seq_simple import MambaConfig, MambaLMHeadModel
@@ -16,6 +15,8 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import random_split
 from torchaudio.transforms import Resample
 from torchdata.dataloader2 import DataLoader2, MultiProcessingReadingService
+
+import wandb
 
 from .config import Config
 from .constants import CACHE_DIR
@@ -225,15 +226,13 @@ def main(config_path: str, edit: bool):
 
                 audio_tokens = audio_tokens[:, : model_config.n_quantizers]
                 audio_tokens = audio_tokens + quantizer_offsets
-                
+
                 # fill with pad token **after** applying offsets
                 audio_tokens = audio_tokens.masked_fill(padding_mask, pad_token_id)
 
                 audio_tokens = flatten_audio_tokens(audio_tokens)
                 input_ids = F.pad(audio_tokens, (1, 0), value=bos_token_id)
                 target_ids = set_eos_id(audio_tokens, eos_token_id, pad_token_id)
-
-
 
             with torch.amp.autocast(dtype=amp_dtype, device_type="cuda", enabled=True):
                 output = model(input_ids)
