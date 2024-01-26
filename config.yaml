@@ -1,0 +1,5 @@
+train:
+  seed: 42
+
+model:
+  n_quantizers: 3

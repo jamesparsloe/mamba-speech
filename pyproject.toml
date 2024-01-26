@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mamba-speech"
+
+version = "0.1.0"
+
+description = ""
+
+requires-python = ">=3.10"
+
+dependencies = [
+    "packaging",
+    "click",
+    "einops",
+    "gradio",
+    "jiwer",
+    "matplotlib",
+    "nltk",
+    "numpy",
+    "pandas",
+    "pydantic",
+    "sentencepiece",
+    "torch",
+    "torchaudio",
+    "torchdata",
+    "wandb",
+    "datasets",
+    "soundfile",
+    "librosa",
+    "descript-audio-codec",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "mambdaspeech.__version__" }
