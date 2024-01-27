@@ -114,16 +114,25 @@ def main(config_path: str, edit: bool):
     # ds_sample_rate = 16000
     # ds = torchaudio.datasets.SPEECHCOMMANDS(CACHE_DIR, download=True)
 
-    ds_sample_rate = 22050
-    ds = torchaudio.datasets.LJSPEECH(CACHE_DIR, download=True)
+    # ds_sample_rate = 22050
+    # ds = torchaudio.datasets.LJSPEECH(CACHE_DIR, download=True)
+
+    ds_sample_rate = 24000
+
+    ds = []
+
+    for url in ["train-clean-100", "train-clean-360", "train-other-500"]:
+        root = os.path.join(CACHE_DIR, "libritts", url)
+        os.makedirs(root, exist_ok=True)
+        ds.append(torchaudio.datasets.LIBRITTS(root, url=url, download=True))
+
+    ds = torch.utils.data.ConcatDataset(ds)
 
     dac_sample_rate = 44100
     resample = Resample(
         orig_freq=ds_sample_rate,
         new_freq=dac_sample_rate,
     ).to(device)
-
-    resample_factor = dac_sample_rate / ds_sample_rate
 
     dac_path = dac.utils.download(model_type="44khz")
     codec = dac.DAC.load(dac_path).eval().to(device)
@@ -209,12 +218,12 @@ def main(config_path: str, edit: bool):
             with torch.no_grad():
                 length_before = waveforms.size(-1)
                 waveforms = resample(waveforms)
-                ratio = waveforms.size(-1) / length_before
+                resample_factor = waveforms.size(-1) / length_before
                 waveforms = codec.preprocess(waveforms, dac_sample_rate)
                 _, audio_tokens, _, _, _ = codec.encode(waveforms)
 
                 audio_tokens_lengths = (
-                    ratio * waveforms_lengths / codec.hop_length
+                    resample_factor * waveforms_lengths / codec.hop_length
                 ).ceil()
 
                 B, Q, T = audio_tokens.size()
