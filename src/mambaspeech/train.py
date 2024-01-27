@@ -137,9 +137,12 @@ def main(config_path: str, edit: bool):
     dac_path = dac.utils.download(model_type="44khz")
     codec = dac.DAC.load(dac_path).eval().to(device)
 
+    max_duration = 8.0
+
     dp = (
         to_iter_datapipe(ds)
         .map(lambda x: rearrange(x[0], "C T -> T C"))
+        .filter(lambda x: x.size(0) / ds_sample_rate < max_duration)
         .cycle()
         .shuffle(buffer_size=10 * train_config.batch_size)
         .batch(train_config.batch_size, drop_last=True)
