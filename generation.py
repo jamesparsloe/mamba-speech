@@ -186,8 +186,13 @@ print(codec.hop_length)
 # config_path = "runs/07gd8g19/002000/config.json"
 # checkpoint_path = "runs/07gd8g19/002000/pytorch_model.bin"
 
+# SpeechCommands
 config_path = "runs/t8estdri/004000/config.json"
 checkpoint_path = "runs/t8estdri/004000/pytorch_model.bin"
+
+# LJSPEECH
+config_path = "./runs/h9sz5600/012000/config.json"
+checkpoint_path = "./runs/h9sz5600/012000/pytorch_model.bin"
 
 with open(config_path, "r") as f:
     config = MambaConfig(**json.load(f))
@@ -213,7 +218,8 @@ def generate(temperature: float, top_k: int):
     input_ids = torch.tensor([[bos_token_id]], dtype=torch.int64, device=device)
 
     frame_rate = 86.1
-    T = int(frame_rate)
+    max_duration = 10.0
+    T = int(max_duration * frame_rate)
     max_length = n_quantizers * T + 1  # we'll knock off the bos token
 
     amp_dtype = torch.bfloat16
@@ -228,6 +234,8 @@ def generate(temperature: float, top_k: int):
 
     quantizer_offsets = codebook_size * torch.arange(n_quantizers, device=device)
     quantizer_offsets = rearrange(quantizer_offsets, "Q -> Q 1")
+
+    print(f"{audio_tokens.shape=} {quantizer_offsets.shape=}")
 
     audio_tokens = audio_tokens - quantizer_offsets
     print(audio_tokens)
@@ -245,6 +253,8 @@ def generate(temperature: float, top_k: int):
     waveform = rearrange(waveform, "1 C T -> C T").cpu()
     path = f"{id}-{temperature=}-{top_k=}.wav"
     torchaudio.save(path, waveform, codec.sample_rate)
+
+    print(f"Saved to {path}")
 
     return path
 
