@@ -50,11 +50,31 @@ def configure_optimizers(self, *, weight_decay, lr: float, betas):
     return optimizer
 
 
-def collate(waveforms: list[Tensor]):
-    lengths = torch.tensor([w.size(0) for w in waveforms])
+def tokenize(text: str):
+    return torch.tensor(list(text.encode("utf-8")))
+
+
+def collate(batch: list[tuple[str, Tensor]], *, pad_token_id: int):
+    lengths = []
+    waveforms = []
+    token_ids = []
+    for text, waveform in batch:
+        lengths.append(waveform.size(0))
+        waveforms.append(waveform)
+        token_ids.append(tokenize(text))
+
+    token_ids = pad_sequence(token_ids, batch_first=True, padding_value=pad_token_id)
+
     waveforms = pad_sequence(waveforms, batch_first=True)
     waveforms = rearrange(waveforms, "B T C -> B C T")
-    return {"waveforms": waveforms, "waveforms_lengths": lengths}
+
+    lengths = torch.tensor(lengths)
+
+    return {
+        "token_ids": token_ids,
+        "waveforms": waveforms,
+        "waveforms_lengths": lengths,
+    }
 
 
 def flatten_audio_tokens(audio_tokens: Tensor):
@@ -139,14 +159,24 @@ def main(config_path: str, edit: bool):
 
     max_duration = 8.0
 
+    n_text_tokens = 256
+
+    n_tokens = n_text_tokens + model_config.codebook_size * model_config.n_quantizers
+    bos_token_id = n_tokens
+    eos_token_id = n_tokens + 1
+    pad_token_id = n_tokens + 1 + 1
+    vocab_size = n_tokens + 1 + 1 + 1
+
+    _collate = partial(collate, pad_token_id=pad_token_id)
+
     dp = (
         to_iter_datapipe(ds)
-        .map(lambda x: rearrange(x[0], "C T -> T C"))
-        .filter(lambda x: x.size(0) / ds_sample_rate < max_duration)
+        .map(lambda x: (x[3], rearrange(x[0], "C T -> T C")))
+        .filter(lambda x: x[1].size(0) / ds_sample_rate < max_duration)
         .cycle()
         .shuffle(buffer_size=10 * train_config.batch_size)
         .batch(train_config.batch_size, drop_last=True)
-        .collate(collate)
+        .collate(_collate)
     )
 
     num_workers = os.cpu_count() - 1
@@ -158,12 +188,6 @@ def main(config_path: str, edit: bool):
     step = 0
 
     amp_dtype = torch.bfloat16
-
-    n_tokens = model_config.codebook_size * model_config.n_quantizers
-    bos_token_id = n_tokens
-    eos_token_id = n_tokens + 1
-    pad_token_id = n_tokens + 1 + 1
-    vocab_size = n_tokens + 1 + 1 + 1
 
     mamba_config = MambaConfig(
         d_model=768,
@@ -190,7 +214,7 @@ def main(config_path: str, edit: bool):
         weight_decay=train_config.weight_decay,
     )
 
-    quantizer_offsets = model_config.codebook_size * torch.arange(
+    quantizer_offsets = n_text_tokens + model_config.codebook_size * torch.arange(
         model_config.n_quantizers, device=device
     )
     quantizer_offsets = rearrange(quantizer_offsets, "Q -> Q 1")
@@ -204,6 +228,7 @@ def main(config_path: str, edit: bool):
     )
 
     batch = next(dl)
+    token_ids = batch["token_ids"].to(device, non_blocking=True)
     waveforms = batch["waveforms"]
     waveforms_lengths = batch["waveforms_lengths"]
     waveforms = waveforms.to(device, non_blocking=True)
@@ -243,8 +268,11 @@ def main(config_path: str, edit: bool):
                 audio_tokens = audio_tokens.masked_fill(padding_mask, pad_token_id)
 
                 audio_tokens = flatten_audio_tokens(audio_tokens)
-                input_ids = F.pad(audio_tokens, (1, 0), value=bos_token_id)
-                target_ids = set_eos_id(audio_tokens, eos_token_id, pad_token_id)
+
+                tokens = torch.cat([token_ids, audio_tokens], dim=-1)
+
+                input_ids = F.pad(tokens, (1, 0), value=bos_token_id)
+                target_ids = set_eos_id(tokens, eos_token_id, pad_token_id)
 
             with torch.amp.autocast(dtype=amp_dtype, device_type="cuda", enabled=True):
                 output = model(input_ids)
@@ -259,6 +287,7 @@ def main(config_path: str, edit: bool):
                 loss = loss / train_config.gradient_accumulation_steps
 
             batch = next(dl)
+            token_ids = batch["token_ids"].to(device, non_blocking=True)
             waveforms = batch["waveforms"]
             waveforms_lengths = batch["waveforms_lengths"]
             waveforms = waveforms.to(device, non_blocking=True)

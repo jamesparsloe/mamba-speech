@@ -15,7 +15,8 @@ import dac
 import torchaudio
 import time
 import gradio as gr
-
+from mambaspeech.train import flatten_audio_tokens
+import torch.nn.functional as F
 
 def unflatten_audio_tokens(audio_tokens: Tensor, T: int):
     audio_tokens = rearrange(audio_tokens, "B (T Q) -> B T Q", T=T)
@@ -178,6 +179,9 @@ def decode(
 
 device = "cuda"
 
+
+
+
 dac_path = dac.utils.download(model_type="44khz")
 codec = dac.DAC.load(dac_path).eval().to(device)
 
@@ -191,8 +195,13 @@ config_path = "runs/t8estdri/004000/config.json"
 checkpoint_path = "runs/t8estdri/004000/pytorch_model.bin"
 
 # LJSPEECH
+name = "ljspeech"
 config_path = "./runs/h9sz5600/012000/config.json"
 checkpoint_path = "./runs/h9sz5600/012000/pytorch_model.bin"
+
+name = "libritts"
+config_path = "./runs/gwa4na10/034000/config.json"
+checkpoint_path = "./runs/gwa4na10/034000/pytorch_model.bin"
 
 with open(config_path, "r") as f:
     config = MambaConfig(**json.load(f))
@@ -209,16 +218,33 @@ n_tokens = codebook_size * n_quantizers
 bos_token_id = n_tokens
 
 
-# print(generated.shape)
+quantizer_offsets = codebook_size * torch.arange(n_quantizers, device=device)
+quantizer_offsets = rearrange(quantizer_offsets, "Q -> Q 1")
 
-
-def generate(temperature: float, top_k: int):
+def generate(prompt_path: str, temperature: float, top_k: int):
     id = int(time.time())
+    prompt_waveform, prompt_sample_rate = torchaudio.load(prompt_path)
+    prompt_waveform = torchaudio.functional.resample(
+        prompt_waveform, prompt_sample_rate, codec.sample_rate
+    )
 
-    input_ids = torch.tensor([[bos_token_id]], dtype=torch.int64, device=device)
+    prompt_waveform = prompt_waveform.to(device)
+    prompt_waveform = rearrange(prompt_waveform, "C T -> 1 C T")
+    prompt_waveform = codec.preprocess(prompt_waveform, codec.sample_rate)
+
+    with torch.inference_mode():
+        _, audio_tokens, _, _, _ = codec.encode(prompt_waveform)
+
+    audio_tokens = audio_tokens[:, :n_quantizers]
+    audio_tokens = audio_tokens + quantizer_offsets
+    audio_tokens = flatten_audio_tokens(audio_tokens)
+
+    audio_tokens = F.pad(audio_tokens, (1, 0), value=bos_token_id)
+
+    # input_ids = torch.tensor([[bos_token_id]], dtype=torch.int64, device=device)
 
     frame_rate = 86.1
-    max_duration = 10.0
+    max_duration = 8.0
     T = int(max_duration * frame_rate)
     max_length = n_quantizers * T + 1  # we'll knock off the bos token
 
@@ -226,14 +252,12 @@ def generate(temperature: float, top_k: int):
 
     # with torch.amp.autocast(dtype=amp_dtype, device_type="cuda", enabled=True):
     out = decode(
-        input_ids, model, max_length, top_k=top_k, temperature=temperature, cg=True
+        audio_tokens, model, max_length, top_k=top_k, temperature=temperature, cg=True
     )
 
     audio_tokens = out.sequences[..., 1:]
     audio_tokens = unflatten_audio_tokens(audio_tokens, T)
 
-    quantizer_offsets = codebook_size * torch.arange(n_quantizers, device=device)
-    quantizer_offsets = rearrange(quantizer_offsets, "Q -> Q 1")
 
     print(f"{audio_tokens.shape=} {quantizer_offsets.shape=}")
 
@@ -262,6 +286,7 @@ def generate(temperature: float, top_k: int):
 demo = gr.Interface(
     fn=generate,
     inputs=[
+        gr.Audio(type="filepath", label="prompt"),
         gr.Slider(minimum=0.0, maximum=1.0, step=0.01, value=1.0, label="temperature"),
         gr.Slider(minimum=1, maximum=1024, step=1, value=1024, label="top-k"),
     ],
