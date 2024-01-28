@@ -272,8 +272,8 @@ def main(config_path: str, edit: bool):
 
                 token_ids = F.pad(token_ids, (1, 0), value=bos_token_id)
                 tokens = torch.cat([token_ids, audio_tokens], dim=-1)
-                input_ids = tokens[:, :-1]
-                target_ids = tokens[:, 1:]
+                input_ids = tokens[:, :-1].contiguous()
+                target_ids = tokens[:, 1:].contiguous()
 
             with torch.amp.autocast(dtype=amp_dtype, device_type="cuda", enabled=True):
                 output = model(input_ids)
