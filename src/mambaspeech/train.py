@@ -268,11 +268,12 @@ def main(config_path: str, edit: bool):
                 audio_tokens = audio_tokens.masked_fill(padding_mask, pad_token_id)
 
                 audio_tokens = flatten_audio_tokens(audio_tokens)
+                audio_tokens = set_eos_id(audio_tokens, eos_token_id, pad_token_id)
 
+                token_ids = F.pad(token_ids, (1, 0), value=bos_token_id)
                 tokens = torch.cat([token_ids, audio_tokens], dim=-1)
-
-                input_ids = F.pad(tokens, (1, 0), value=bos_token_id)
-                target_ids = set_eos_id(tokens, eos_token_id, pad_token_id)
+                input_ids = tokens[:, :-1]
+                target_ids = tokens[:, 1:]
 
             with torch.amp.autocast(dtype=amp_dtype, device_type="cuda", enabled=True):
                 output = model(input_ids)
