@@ -54,26 +54,25 @@ def tokenize(text: str):
     return torch.tensor(list(text.encode("utf-8")))
 
 
-def collate(batch: list[tuple[str, Tensor]], *, pad_token_id: int):
-    lengths = []
+def collate(batch: list[tuple[str, Tensor]], *, bos_token_id: int):
+    waveforms_lengths = []
     waveforms = []
-    token_ids = []
-    for text, waveform in batch:
-        lengths.append(waveform.size(0))
-        waveforms.append(waveform)
-        token_ids.append(tokenize(text))
+    texts = []
 
-    token_ids = pad_sequence(token_ids, batch_first=True, padding_value=pad_token_id)
+    for text, waveform in batch:
+        waveforms_lengths.append(waveform.size(0))
+        waveforms.append(waveform)
+        texts.append(tokenize(text))
 
     waveforms = pad_sequence(waveforms, batch_first=True)
     waveforms = rearrange(waveforms, "B T C -> B C T")
 
-    lengths = torch.tensor(lengths)
+    waveforms_lengths = torch.tensor(waveforms_lengths)
 
     return {
-        "token_ids": token_ids,
+        "texts": texts,
         "waveforms": waveforms,
-        "waveforms_lengths": lengths,
+        "waveforms_lengths": waveforms_lengths,
     }
 
 
@@ -134,19 +133,19 @@ def main(config_path: str, edit: bool):
     # ds_sample_rate = 16000
     # ds = torchaudio.datasets.SPEECHCOMMANDS(CACHE_DIR, download=True)
 
-    # ds_sample_rate = 22050
-    # ds = torchaudio.datasets.LJSPEECH(CACHE_DIR, download=True)
+    ds_sample_rate = 22050
+    ds = torchaudio.datasets.LJSPEECH(CACHE_DIR, download=True)
 
-    ds_sample_rate = 24000
+    # ds_sample_rate = 24000
 
-    ds = []
+    # ds = []
 
-    for url in ["train-clean-100", "train-clean-360", "train-other-500"]:
-        root = os.path.join(CACHE_DIR, "libritts", url)
-        os.makedirs(root, exist_ok=True)
-        ds.append(torchaudio.datasets.LIBRITTS(root, url=url, download=True))
+    # for url in ["train-clean-100", "train-clean-360", "train-other-500"]:
+    #     root = os.path.join(CACHE_DIR, "libritts", url)
+    #     os.makedirs(root, exist_ok=True)
+    #     ds.append(torchaudio.datasets.LIBRITTS(root, url=url, download=True))
 
-    ds = torch.utils.data.ConcatDataset(ds)
+    # ds = torch.utils.data.ConcatDataset(ds)
 
     dac_sample_rate = 44100
     resample = Resample(
@@ -167,7 +166,7 @@ def main(config_path: str, edit: bool):
     pad_token_id = n_tokens + 1 + 1
     vocab_size = n_tokens + 1 + 1 + 1
 
-    _collate = partial(collate, pad_token_id=pad_token_id)
+    _collate = partial(collate, bos_token_id=bos_token_id)
 
     dp = (
         to_iter_datapipe(ds)
@@ -228,11 +227,9 @@ def main(config_path: str, edit: bool):
     )
 
     batch = next(dl)
-    token_ids = batch["token_ids"].to(device, non_blocking=True)
-    waveforms = batch["waveforms"]
-    waveforms_lengths = batch["waveforms_lengths"]
-    waveforms = waveforms.to(device, non_blocking=True)
-    waveforms_lengths = waveforms_lengths.to(device, non_blocking=True)
+    texts = batch["texts"]
+    waveforms = batch["waveforms"].to(device, non_blocking=True)
+    waveforms_lengths = batch["waveforms_lengths"].to(device, non_blocking=True)
 
     t1 = time.perf_counter()
 
@@ -251,29 +248,44 @@ def main(config_path: str, edit: bool):
                 _, audio_tokens, _, _, _ = codec.encode(waveforms)
 
                 audio_tokens_lengths = (
-                    resample_factor * waveforms_lengths / codec.hop_length
-                ).ceil()
+                    (resample_factor * waveforms_lengths / codec.hop_length)
+                    .ceil()
+                    .to(torch.int32)
+                )
 
                 B, Q, T = audio_tokens.size()
-
-                padding_mask = torch.arange(
-                    T, device=device
-                ) >= audio_tokens_lengths.unsqueeze(-1)
-                padding_mask = rearrange(padding_mask, "B T -> B 1 T")
 
                 audio_tokens = audio_tokens[:, : model_config.n_quantizers]
                 audio_tokens = audio_tokens + quantizer_offsets
 
-                # fill with pad token **after** applying offsets
-                audio_tokens = audio_tokens.masked_fill(padding_mask, pad_token_id)
+                audio_tokens = flatten_audio_tokens(
+                    audio_tokens
+                )  # (B, n_quantizers * T)
 
-                audio_tokens = flatten_audio_tokens(audio_tokens)
-                audio_tokens = set_eos_id(audio_tokens, eos_token_id, pad_token_id)
+                token_ids_batch = []
 
-                token_ids = F.pad(token_ids, (1, 0), value=bos_token_id)
-                tokens = torch.cat([token_ids, audio_tokens], dim=-1)
-                input_ids = tokens[:, :-1].contiguous()
-                target_ids = tokens[:, 1:].contiguous()
+                for b in range(B):
+                    length = model_config.n_quantizers * audio_tokens_lengths[b]
+
+                    print(f"{texts[b].shape=} {audio_tokens[b, :length].shape=}")
+
+                    token_ids = torch.cat(
+                        (
+                            texts[b].to(device),
+                            audio_tokens[b, :length],
+                        ),
+                    )
+                    token_ids = F.pad(token_ids, (1, 0), value=bos_token_id)
+                    token_ids = F.pad(token_ids, (0, 1), value=eos_token_id)
+
+                    token_ids_batch.append(token_ids)
+
+                token_ids = pad_sequence(
+                    token_ids_batch, batch_first=True, padding_value=pad_token_id
+                )
+
+                input_ids = token_ids[:, :-1].contiguous()
+                target_ids = token_ids[:, 1:].contiguous()
 
             with torch.amp.autocast(dtype=amp_dtype, device_type="cuda", enabled=True):
                 output = model(input_ids)
@@ -288,11 +300,9 @@ def main(config_path: str, edit: bool):
                 loss = loss / train_config.gradient_accumulation_steps
 
             batch = next(dl)
-            token_ids = batch["token_ids"].to(device, non_blocking=True)
-            waveforms = batch["waveforms"]
-            waveforms_lengths = batch["waveforms_lengths"]
-            waveforms = waveforms.to(device, non_blocking=True)
-            waveforms_lengths = waveforms_lengths.to(device, non_blocking=True)
+            texts = batch["texts"]
+            waveforms = batch["waveforms"].to(device, non_blocking=True)
+            waveforms_lengths = batch["waveforms_lengths"].to(device, non_blocking=True)
 
             loss.backward()
 
