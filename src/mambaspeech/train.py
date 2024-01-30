@@ -133,19 +133,19 @@ def main(config_path: str, edit: bool):
     # ds_sample_rate = 16000
     # ds = torchaudio.datasets.SPEECHCOMMANDS(CACHE_DIR, download=True)
 
-    ds_sample_rate = 22050
-    ds = torchaudio.datasets.LJSPEECH(CACHE_DIR, download=True)
+    # ds_sample_rate = 22050
+    # ds = torchaudio.datasets.LJSPEECH(CACHE_DIR, download=True)
 
-    # ds_sample_rate = 24000
+    ds_sample_rate = 24000
 
-    # ds = []
+    ds = []
 
-    # for url in ["train-clean-100", "train-clean-360", "train-other-500"]:
-    #     root = os.path.join(CACHE_DIR, "libritts", url)
-    #     os.makedirs(root, exist_ok=True)
-    #     ds.append(torchaudio.datasets.LIBRITTS(root, url=url, download=True))
+    for url in ["train-clean-100", "train-clean-360", "train-other-500"]:
+        root = os.path.join(CACHE_DIR, "libritts", url)
+        os.makedirs(root, exist_ok=True)
+        ds.append(torchaudio.datasets.LIBRITTS(root, url=url, download=True))
 
-    # ds = torch.utils.data.ConcatDataset(ds)
+    ds = torch.utils.data.ConcatDataset(ds)
 
     dac_sample_rate = 44100
     resample = Resample(

@@ -239,6 +239,11 @@ text_offset = 256
 config_path = "./runs/mdghb8lx/000500/config.json"
 checkpoint_path = "./runs/mdghb8lx/000500/pytorch_model.bin"
 
+text_condtioned = True
+text_offset = 256
+config_path = "./runs/lzu5rp0v/002000/config.json"
+checkpoint_path = "./runs/lzu5rp0v/002000/pytorch_model.bin"
+
 with open(config_path, "r") as f:
     config = MambaConfig(**json.load(f))
 
