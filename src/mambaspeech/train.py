@@ -267,8 +267,6 @@ def main(config_path: str, edit: bool):
                 for b in range(B):
                     length = model_config.n_quantizers * audio_tokens_lengths[b]
 
-                    print(f"{texts[b].shape=} {audio_tokens[b, :length].shape=}")
-
                     token_ids = torch.cat(
                         (
                             texts[b].to(device),
