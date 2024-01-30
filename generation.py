@@ -61,6 +61,9 @@ def decode(
     input_ids,
     model,
     max_length,
+    *,
+    n_quantizers: int,
+    text_offset: int,
     top_k=1,
     top_p=0.0,
     temperature=1.0,
@@ -85,6 +88,8 @@ def decode(
         sequences: (batch, max_length)
         scores: tuples of (batch, vocab_size)
     """
+
+    T_text = input_ids.size(-1)
 
     batch_size, seqlen_og = input_ids.shape
     teacher_output_len = 0
@@ -153,8 +158,24 @@ def decode(
     scores, sequences = [], [input_ids]
     sequences_cat = input_ids
 
+    step = 0
+
     while not should_stop(sequences[-1], inference_params):
-        scores.append(get_logits(sequences[-1], inference_params))
+        logits = get_logits(sequences[-1], inference_params)
+
+        rem = step % n_quantizers
+
+        # mask = torch.full_like(logits, -float("inf"), device=device)
+        ids = torch.arange(logits.size(-1), device=device)
+        mask = torch.where(
+            (ids >= rem * codebook_size + text_offset)
+            & (ids < (rem + 1) * codebook_size + text_offset),
+            0.0,
+            -float("inf"),
+        )
+        logits = logits + mask
+
+        scores.append(logits)
         inference_params.seqlen_offset += sequences[-1].shape[1]
         if repetition_penalty == 1.0:
             sampled_tokens = sample_tokens(scores[-1], inference_params)
@@ -164,6 +185,9 @@ def decode(
             )
             sampled_tokens = sample_tokens(logits, inference_params)
             sequences_cat = torch.cat([sequences_cat, sampled_tokens], dim=1)
+
+        step += 1
+
         sequences.append(sampled_tokens)
 
     if enable_timing:
@@ -183,8 +207,6 @@ device = "cuda"
 
 dac_path = dac.utils.download(model_type="44khz")
 codec = dac.DAC.load(dac_path).eval().to(device)
-
-print(codec.hop_length)
 
 # config_path = "runs/07gd8g19/002000/config.json"
 # checkpoint_path = "runs/07gd8g19/002000/pytorch_model.bin"
@@ -211,6 +233,11 @@ text_condtioned = True
 text_offset = 256
 config_path = "./runs/o9rzoxpa/004000/config.json"
 checkpoint_path = "./runs/o9rzoxpa/004000/pytorch_model.bin"
+
+text_condtioned = True
+text_offset = 256
+config_path = "./runs/mdghb8lx/000500/config.json"
+checkpoint_path = "./runs/mdghb8lx/000500/pytorch_model.bin"
 
 with open(config_path, "r") as f:
     config = MambaConfig(**json.load(f))
@@ -271,8 +298,17 @@ def generate(text: str, temperature: float, top_k: int):
 
     # with torch.amp.autocast(dtype=amp_dtype, device_type="cuda", enabled=True):
     out = decode(
-        input_ids, model, max_length, top_k=top_k, temperature=temperature, cg=True
+        input_ids,
+        model,
+        max_length,
+        n_quantizers=n_quantizers,
+        text_offset=text_offset,
+        top_k=top_k,
+        temperature=temperature,
+        cg=True,
     )
+
+    print(f"{input_ids.shape=} {out.sequences.shape=}")
 
     audio_tokens = out.sequences[..., T_text:]
     audio_tokens = unflatten_audio_tokens(audio_tokens, T)
@@ -283,9 +319,7 @@ def generate(text: str, temperature: float, top_k: int):
     print(audio_tokens)
 
     # TODO should mask the logits out depending on which codebook we're decoding in decode
-    audio_tokens = torch.where(
-        audio_tokens < codebook_size, audio_tokens, 0
-    )
+    audio_tokens = torch.where(audio_tokens < codebook_size, audio_tokens, 0)
     audio_tokens = torch.where(audio_tokens > 0, audio_tokens, 0)
 
     print(audio_tokens)

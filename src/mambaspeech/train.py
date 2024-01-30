@@ -189,8 +189,10 @@ def main(config_path: str, edit: bool):
     amp_dtype = torch.bfloat16
 
     mamba_config = MambaConfig(
-        d_model=768,
-        n_layer=24,
+        # d_model=768,
+        # n_layer=24,
+        d_model=512,
+        n_layer=12,
         vocab_size=vocab_size,
         ssm_cfg={},
         rms_norm=True,
