@@ -258,8 +258,6 @@ def main(config_path: str, edit: bool):
                 waveforms = codec.preprocess(waveforms, dac_sample_rate)
                 _, audio_tokens, _, _, _ = codec.encode(waveforms)
 
-                print(f"{resample_factor=}")
-
                 audio_tokens_lengths = (
                     (resample_factor * waveforms_lengths / codec.hop_length)
                     .ceil()
