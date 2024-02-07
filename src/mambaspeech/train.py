@@ -297,8 +297,8 @@ def main(config_path: str, edit: bool):
                 target_ids = token_ids[:, 1:].contiguous()
 
                 # what if we just ignore the loss on the text tokens
-                text_mask = target_ids < n_text_tokens
-                target_ids = target_ids.masked_fill(text_mask, pad_token_id)
+                # text_mask = target_ids < n_text_tokens
+                # target_ids = target_ids.masked_fill(text_mask, pad_token_id)
 
             with torch.amp.autocast(dtype=amp_dtype, device_type="cuda", enabled=True):
                 output = model(input_ids)

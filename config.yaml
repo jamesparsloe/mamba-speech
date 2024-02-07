@@ -1,6 +1,6 @@
 train:
   seed: 42
-  checkpoint_every: 1000
+  checkpoint_every: 250
 
 model:
   n_quantizers: 3

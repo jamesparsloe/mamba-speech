@@ -208,41 +208,10 @@ device = "cuda"
 dac_path = dac.utils.download(model_type="44khz")
 codec = dac.DAC.load(dac_path).eval().to(device)
 
-# config_path = "runs/07gd8g19/002000/config.json"
-# checkpoint_path = "runs/07gd8g19/002000/pytorch_model.bin"
-
-# SpeechCommands
-config_path = "runs/t8estdri/004000/config.json"
-checkpoint_path = "runs/t8estdri/004000/pytorch_model.bin"
-
-# LJSPEECH
-name = "ljspeech"
-config_path = "./runs/h9sz5600/012000/config.json"
-checkpoint_path = "./runs/h9sz5600/012000/pytorch_model.bin"
-
-name = "libritts"
-config_path = "./runs/gwa4na10/034000/config.json"
-checkpoint_path = "./runs/gwa4na10/034000/pytorch_model.bin"
-
 text_condtioned = True
 text_offset = 256
-config_path = "./runs/egb5ural/002000/config.json"
-checkpoint_path = "./runs/egb5ural/002000/pytorch_model.bin"
-
-text_condtioned = True
-text_offset = 256
-config_path = "./runs/o9rzoxpa/004000/config.json"
-checkpoint_path = "./runs/o9rzoxpa/004000/pytorch_model.bin"
-
-text_condtioned = True
-text_offset = 256
-config_path = "./runs/mdghb8lx/000500/config.json"
-checkpoint_path = "./runs/mdghb8lx/000500/pytorch_model.bin"
-
-text_condtioned = True
-text_offset = 256
-config_path = "./runs/lzu5rp0v/002000/config.json"
-checkpoint_path = "./runs/lzu5rp0v/002000/pytorch_model.bin"
+config_path = "./runs/v6v0lxqr/001000/config.json"
+checkpoint_path = "./runs/v6v0lxqr/001000/pytorch_model.bin"
 
 with open(config_path, "r") as f:
     config = MambaConfig(**json.load(f))
@@ -255,8 +224,11 @@ model = model.to(device).eval()
 
 codebook_size = 1024
 n_quantizers = 3
-n_tokens = codebook_size * n_quantizers
+n_text_tokens = 256
+n_tokens = n_text_tokens + codebook_size * n_quantizers
 bos_token_id = n_tokens
+boa_token_id = n_tokens + 1
+eos_token_id = n_tokens + 1 + 1
 
 
 quantizer_offsets = text_offset + codebook_size * torch.arange(
@@ -294,7 +266,7 @@ def generate(text: str, temperature: float, top_k: int):
 
     amp_dtype = torch.bfloat16
 
-    input_ids = tokenize(text)
+    input_ids = tokenize(text, boa_token_id=boa_token_id)
     input_ids = rearrange(input_ids, "T -> 1 T").to(device)
     input_ids = F.pad(input_ids, (1, 0), value=bos_token_id)
     T_text = input_ids.size(-1)
@@ -324,8 +296,8 @@ def generate(text: str, temperature: float, top_k: int):
     print(audio_tokens)
 
     # TODO should mask the logits out depending on which codebook we're decoding in decode
-    audio_tokens = torch.where(audio_tokens < codebook_size, audio_tokens, 0)
-    audio_tokens = torch.where(audio_tokens > 0, audio_tokens, 0)
+    # audio_tokens = torch.where(audio_tokens < codebook_size, audio_tokens, 0)
+    # audio_tokens = torch.where(audio_tokens > 0, audio_tokens, 0)
 
     print(audio_tokens)
 
