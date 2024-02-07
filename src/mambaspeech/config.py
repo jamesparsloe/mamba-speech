@@ -23,6 +23,8 @@ class TrainConfig(BaseModel):
     checkpoint_every: int = 1_000
     log_every: int = 10
 
+    dataset: str = "ljspeech"
+
 
 class Config(BaseModel):
     train: TrainConfig = TrainConfig()

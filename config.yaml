@@ -1,6 +1,7 @@
 train:
   seed: 42
   checkpoint_every: 250
+  dataset: ljspeech
 
 model:
   n_quantizers: 3
