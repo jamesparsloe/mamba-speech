@@ -7,8 +7,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
 class MambaSpeechConfig(BaseModel):
-    tokenizer: str = "EleutherAI/gpt-neox-20b"
-    base_name: str = "state-spaces/mamba-130m"
+    n_text_tokens: int = 256
 
     dac_model_name: str = "44khz"
     codebook_size: int = 1024
@@ -16,53 +15,33 @@ class MambaSpeechConfig(BaseModel):
         9  # number of quantizers to model - must be <= codec.n_codebooks
     )
 
+    # backbone/MambaLMHeadModel config
+    d_model: int = 512
+    n_layer: int = 12
+    rms_norm: bool = True
+    residual_in_fp32: bool = True
+    fused_add_norm: bool = True
+    pad_vocab_size_multiple: int = 8
 
-class MambaTTS(nn.Module):
+
+class MambaSpeech(nn.Module):
     def __init__(self, config: MambaSpeechConfig):
         super().__init__()
         self.config = config
 
-        self.model = MambaLMHeadModel.from_pretrained(config.base_name)
+        vocab_size = config.n_text_tokens + config.n_quantizers * config.codebook_size
 
-        # copy across pretraind embeddings etc
-        mamba_config = self.model.config
+        self.backbone = MambaLMHeadModel(
+            d_model=config.d_model,
+            n_layer=config.n_layer,
+            vocab_size=vocab_size,
+            rms_norm=config.rms_norm,
+            residual_in_fp32=config.residual_in_fp32,
+            fused_add_norm=config.fused_add_norm,
+            pad_vocab_size_multiple=config.pad_vocab_size_multiple,
+        )
 
-        embedding = self.model.backbone.embedding
-        n_text_tokens, embedding_dim = embedding.weight.size()
-
-        self.n_text_tokens = n_text_tokens
-
-        n_audio_tokens = config.n_quantizers * config.codebook_size
-        self.audio_bos_id = n_text_tokens + n_audio_tokens
-        self.audio_eos_id = n_text_tokens + n_audio_tokens + 1
-        self.audio_pad_id = n_text_tokens + n_audio_tokens + 1 + 1
-        n_audio_tokens = n_audio_tokens + 1 + 1 + 1
-
-        vocab_size = n_text_tokens + n_audio_tokens
-
-        if vocab_size % mamba_config.pad_vocab_size_multiple != 0:
-            vocab_size += mamba_config.pad_vocab_size_multiple - (
-                vocab_size % mamba_config.pad_vocab_size_multiple
-            )
-
-        new_embedding = nn.Embedding(vocab_size, embedding_dim)
-
-        new_embedding.weight.data[:n_text_tokens] = embedding.weight.data[
-            :n_text_tokens
-        ]
-        self.model.backbone.embedding = new_embedding
-
-        lm_head = self.model.lm_head
-        n_text_tokens, in_features = lm_head.weight.size()
-        bias = lm_head.bias
-        new_lm_head = nn.Linear(in_features, vocab_size, bias=bias)
-        new_lm_head.weight.data[:n_text_tokens] = lm_head.weight.data[:n_text_tokens]
-
-        self.model.lm_head = new_lm_head
-
-        self.model.tie_weights()
-
-    def forward(self, input_ids: Tensor):
+    def forward(self, texts: list[str], waveforms: list[Tensor]):
         return self.model(input_ids)
 
 
@@ -71,7 +50,7 @@ if __name__ == "__main__":
     # print(model.config)
     device = "cuda"
     config = MambaSpeechConfig(n_quantizers=3)
-    model = MambaTTS(config).to(device)
+    model = MambaSpeech(config).to(device)
 
     tokenizer = AutoTokenizer.from_pretrained(config.tokenizer)
 
