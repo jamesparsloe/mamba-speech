@@ -210,8 +210,9 @@ device = "cuda"
 dac_path = dac.utils.download(model_type="44khz")
 codec = dac.DAC.load(dac_path).eval().to(device)
 
-checkpoint_path = ""
-model = MambaSpeech.from_pretrained().to(device).eval()
+checkpoint_path = "./runs/zz9cmy20/001000/model.pt"  # tiny
+checkpoint_path = "./runs/ocjnu658/001000/model.pt"  # small
+model = MambaSpeech.from_pretrained(checkpoint_path).to(device).eval()
 
 codebook_size = model.config.codebook_size
 n_text_tokens = model.config.n_text_tokens

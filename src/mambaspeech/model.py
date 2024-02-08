@@ -314,6 +314,6 @@ class MambaSpeech(nn.Module, GenerationMixin):
         checkpoint = torch.load(path, map_location="cpu")
         state_dict = checkpoint["model"]
         config = MambaSpeechConfig(**checkpoint["config"]["model"])
-        model = MambaLMHeadModel(config)
+        model = MambaSpeech(config)
         _ = model.load_state_dict(state_dict)
         return model

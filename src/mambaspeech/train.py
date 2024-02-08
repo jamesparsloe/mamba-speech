@@ -366,11 +366,7 @@ def main(config_path: str, edit: bool, overfit: bool):
 
         if step % train_config.log_every == 0:
             t2 = time.perf_counter()
-            samples = (
-                train_config.batch_size
-                * train_config.gradient_accumulation_steps
-                * train_config.log_every
-            )
+            samples = effective_batch_size * train_config.log_every
             throughput = samples / (t2 - t1)
 
             metrics = {
