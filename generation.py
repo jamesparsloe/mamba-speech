@@ -1,22 +1,24 @@
-from mamba_ssm.models.mixer_seq_simple import MambaConfig, MambaLMHeadModel
+import json
+import time
+
+import dac
+import gradio as gr
+import torch
+import torch.nn.functional as F
+import torchaudio
+from einops import rearrange
 from mamba_ssm.utils.generation import (
     GreedySearchDecoderOnlyOutput,
-    SampleDecoderOnlyOutput,
     InferenceParams,
-    modify_logits_for_top_p_filtering,
+    SampleDecoderOnlyOutput,
     modify_logit_for_repetition_penalty,
+    modify_logits_for_top_p_filtering,
     update_graph_cache,
 )
-import json
-import torch
 from torch import Tensor
-from einops import rearrange
-import dac
-import torchaudio
-import time
-import gradio as gr
+
+from mambaspeech.model import MambaSpeech, MambaSpeechConfig
 from mambaspeech.train import flatten_audio_tokens, tokenize
-import torch.nn.functional as F
 
 
 def unflatten_audio_tokens(audio_tokens: Tensor, T: int):
@@ -63,7 +65,7 @@ def decode(
     max_length,
     *,
     n_quantizers: int,
-    text_offset: int,
+    n_text_tokens: int,
     top_k=1,
     top_p=0.0,
     temperature=1.0,
@@ -165,11 +167,11 @@ def decode(
 
         rem = step % n_quantizers
 
-        # mask = torch.full_like(logits, -float("inf"), device=device)
+        mask = torch.full_like(logits, -float("inf"), device=device)
         ids = torch.arange(logits.size(-1), device=device)
         mask = torch.where(
-            (ids >= rem * codebook_size + text_offset)
-            & (ids < (rem + 1) * codebook_size + text_offset),
+            (ids >= rem * codebook_size + n_text_tokens)
+            & (ids < (rem + 1) * codebook_size + n_text_tokens),
             0.0,
             -float("inf"),
         )
@@ -208,30 +210,19 @@ device = "cuda"
 dac_path = dac.utils.download(model_type="44khz")
 codec = dac.DAC.load(dac_path).eval().to(device)
 
-text_condtioned = True
-text_offset = 256
-config_path = "./runs/v6v0lxqr/001000/config.json"
-checkpoint_path = "./runs/v6v0lxqr/001000/pytorch_model.bin"
+checkpoint_path = ""
+model = MambaSpeech.from_pretrained().to(device).eval()
 
-with open(config_path, "r") as f:
-    config = MambaConfig(**json.load(f))
+codebook_size = model.config.codebook_size
+n_text_tokens = model.config.n_text_tokens
+n_tokens = model.config.n_tokens
+n_quantizers = model.config.n_quantizers
 
-state_dict = torch.load(checkpoint_path)
+bos_token_id = model.config.bos_token_id
+boa_token_id = model.config.boa_token_id
+eos_token_id = model.config.eos_token_id
 
-model = MambaLMHeadModel(config)
-_ = model.load_state_dict(state_dict)
-model = model.to(device).eval()
-
-codebook_size = 1024
-n_quantizers = 3
-n_text_tokens = 256
-n_tokens = n_text_tokens + codebook_size * n_quantizers
-bos_token_id = n_tokens
-boa_token_id = n_tokens + 1
-eos_token_id = n_tokens + 1 + 1
-
-
-quantizer_offsets = text_offset + codebook_size * torch.arange(
+quantizer_offsets = n_text_tokens + codebook_size * torch.arange(
     n_quantizers, device=device
 )
 quantizer_offsets = rearrange(quantizer_offsets, "Q -> Q 1")
@@ -279,16 +270,19 @@ def generate(text: str, temperature: float, top_k: int):
         model,
         max_length,
         n_quantizers=n_quantizers,
-        text_offset=text_offset,
+        n_text_tokens=n_text_tokens,
         top_k=top_k,
         temperature=temperature,
         cg=True,
+        eos_token_id=eos_token_id,
     )
 
     print(f"{input_ids.shape=} {out.sequences.shape=}")
 
     audio_tokens = out.sequences[..., T_text:]
     audio_tokens = unflatten_audio_tokens(audio_tokens, T)
+
+    print(audio_tokens)
 
     print(f"{audio_tokens.shape=} {quantizer_offsets.shape=}")
 
@@ -327,3 +321,13 @@ demo = gr.Interface(
 
 
 demo.launch(debug=True)
+
+
+# has never been surpassed.
+# it is of the first importance that the letter used should be fine in form;
+# And it is worth mention in passing that, as an example of fine typography,
+# Printing, then, for our purpose, may be considered as the art of making books by means of movable types.
+# produced the block books, which were the immediate predecessors of the true printed book,
+# produced the block books, which were the immediate predecessors of the true printed book,
+# has never been surpassed.
+# Printing, then, for our purpose, may be considered as the art of making books by means of movable types.

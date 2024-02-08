@@ -1,0 +1,12 @@
+model:
+  n_quantizers: 1
+  d_model: 768
+  n_layer: 24
+train:
+  batch_size: 8
+  checkpoint_every: 1000
+  dataset: libritts
+  gradient_accumulation_steps: 4
+  lr: 0.0001
+  seed: 42
+  val_every: 1000

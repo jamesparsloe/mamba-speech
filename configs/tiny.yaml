@@ -1,0 +1,10 @@
+model:
+  n_quantizers: 1
+train:
+  batch_size: 16
+  checkpoint_every: 1000
+  dataset: libritts
+  gradient_accumulation_steps: 2
+  lr: 0.0003
+  seed: 42
+  val_every: 1000
