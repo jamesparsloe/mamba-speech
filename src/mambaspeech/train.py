@@ -364,6 +364,28 @@ def main(config_path: str, edit: bool, overfit: bool):
 
         step += 1
 
+        if step % train_config.log_every == 0:
+            t2 = time.perf_counter()
+            samples = (
+                train_config.batch_size
+                * train_config.gradient_accumulation_steps
+                * train_config.log_every
+            )
+            throughput = samples / (t2 - t1)
+
+            metrics = {
+                "train/loss": loss.item() * train_config.gradient_accumulation_steps,
+                "train/grad_norm": grad_norm.item(),
+                "train/throughput": throughput,
+                "train/lr": lr,
+            }
+
+            wandb.log(
+                metrics,
+                step=step,
+            )
+            t1 = t2
+
         if step % train_config.val_every == 0:
             model.eval()
             val_loss_total = 0.0
@@ -395,8 +417,6 @@ def main(config_path: str, edit: bool, overfit: bool):
 
             val_loss = val_loss_total / val_size
 
-            print(f"{val_loss=} {val_size=}")
-
             wandb.log(
                 {
                     "val/loss": val_loss,
@@ -404,30 +424,6 @@ def main(config_path: str, edit: bool, overfit: bool):
                 step=step,
             )
             model.train()
-
-        if step % train_config.log_every == 0:
-            t2 = time.perf_counter()
-            samples = (
-                train_config.batch_size
-                * train_config.gradient_accumulation_steps
-                * train_config.log_every
-            )
-            throughput = samples / (t2 - t1)
-
-            metrics = {
-                "train/loss": loss.item() * train_config.gradient_accumulation_steps,
-                "train/grad_norm": grad_norm.item(),
-                "train/throughput": throughput,
-                "train/lr": lr,
-            }
-
-            print(step, metrics)
-
-            wandb.log(
-                metrics,
-                step=step,
-            )
-            t1 = t2
 
         if step % train_config.checkpoint_every == 0:
             checkpoint = {
