@@ -436,7 +436,12 @@ def main(config_path: str, edit: bool, overfit: bool):
                     val_texts, val_waveforms, val_waveforms_lengths, seqlen=seqlen
                 )
 
-                with torch.no_grad():
+                with (
+                    torch.no_grad(),
+                    torch.amp.autocast(
+                        dtype=amp_dtype, device_type="cuda", enabled=True
+                    ),
+                ):
                     val_output = model(val_input_ids)
                     val_logits = val_output.logits
 
