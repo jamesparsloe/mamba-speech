@@ -1,6 +1,7 @@
 import os
 import time
 from functools import partial
+from typing import Literal
 
 import click
 import dac
@@ -9,17 +10,15 @@ import torch.nn.functional as F
 import torchaudio
 import yaml
 from einops import rearrange
+from flash_attn.models.gpt import GPTLMHeadModel
 from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import random_split
 from torchaudio.transforms import Resample
 from torchdata.dataloader2 import DataLoader2, MultiProcessingReadingService
+from transformers.models.gpt2.configuration_gpt2 import GPT2Config
 
 import wandb
-
-from transformers.models.gpt2.configuration_gpt2 import GPT2Config
-from flash_attn.models.gpt import GPTLMHeadModel
-from typing import Literal
 
 from .config import Config
 from .constants import CACHE_DIR

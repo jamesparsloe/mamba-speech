@@ -1,8 +1,7 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from .model import MambaSpeechConfig
 from .gpt import GPTSpeechConfig
-from pydantic import Field
+from .model import MambaSpeechConfig
 
 
 class TrainConfig(BaseModel):

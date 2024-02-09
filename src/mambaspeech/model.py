@@ -4,6 +4,7 @@ import os
 from collections import namedtuple
 from functools import partial
 from typing import Literal
+
 import torch
 import torch.nn as nn
 from mamba_ssm.modules.mamba_simple import Block, Mamba
