@@ -1,6 +1,8 @@
 from pydantic import BaseModel
 
 from .model import MambaSpeechConfig
+from .gpt import GPTSpeechConfig
+from pydantic import Field
 
 
 class TrainConfig(BaseModel):
@@ -27,5 +29,5 @@ class TrainConfig(BaseModel):
 
 
 class Config(BaseModel):
+    model: MambaSpeechConfig | GPTSpeechConfig = Field(discriminator="kind")
     train: TrainConfig = TrainConfig()
-    model: MambaSpeechConfig = MambaSpeechConfig()

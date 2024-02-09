@@ -1,8 +1,8 @@
 model:
-  kind: mambaspeech
+  kind: gptspeech
+  seqlen: 2048
   n_quantizers: 2
-  d_model: 768
-  n_layer: 24
+  max_duration: 8.0
 train:
   batch_size: 8
   checkpoint_every: 250

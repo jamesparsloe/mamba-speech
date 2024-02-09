@@ -17,6 +17,10 @@ from torchdata.dataloader2 import DataLoader2, MultiProcessingReadingService
 
 import wandb
 
+from transformers.models.gpt2.configuration_gpt2 import GPT2Config
+from flash_attn.models.gpt import GPTLMHeadModel
+from typing import Literal
+
 from .config import Config
 from .constants import CACHE_DIR
 from .model import MambaSpeech, MambaSpeechConfig
@@ -177,8 +181,6 @@ def main(config_path: str, edit: bool, overfit: bool):
     dac_path = dac.utils.download(model_type="44khz")
     codec = dac.DAC.load(dac_path).eval().to(device)
 
-    max_duration = 16.0
-
     n_text_tokens = model_config.n_text_tokens
 
     bos_token_id = model_config.bos_token_id
@@ -239,7 +241,30 @@ def main(config_path: str, edit: bool, overfit: bool):
 
     min_lr = train_config.lr / 10.0
 
-    model = MambaSpeech(model_config).to(device)
+    # fixed shape
+    seqlen = None
+
+    if model_config.kind == "gptspeech":
+        seqlen = model_config.seqlen
+
+        # https://github.com/Dao-AILab/flash-attention/tree/main/training#model-components
+        gpt2_config = GPT2Config(
+            vocab_size=model_config.vocab_size,
+            n_positions=seqlen,
+            n_embd=model_config.d_model,
+            n_layer=model_config.n_layer,
+            n_head=model_config.n_head,
+            scale_attn_by_inverse_layer_idx=True,
+            rotary_emb_fraction=0.5,
+            use_flash_attn=True,
+            fused_mlp=True,
+            fused_bias_fc=True,
+            fused_dropout_add_ln=True,
+            pad_vocab_size_multiple=model_config.pad_vocab_size_multiple,
+        )
+        model = GPTLMHeadModel(gpt2_config).to(device)
+    else:
+        model = MambaSpeech(model_config).to(device)
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
@@ -267,7 +292,10 @@ def main(config_path: str, edit: bool, overfit: bool):
 
     @torch.no_grad()
     def preprocess(
-        texts: list[Tensor], waveforms: Tensor, waveforms_lengths: Tensor
+        texts: list[Tensor],
+        waveforms: Tensor,
+        waveforms_lengths: Tensor,
+        seqlen: int | None = None,
     ) -> tuple[Tensor, Tensor]:
         length_before = waveforms.size(-1)
         waveforms = resample(waveforms)
@@ -306,6 +334,12 @@ def main(config_path: str, edit: bool, overfit: bool):
 
         token_ids = pad_sequence(batched, batch_first=True, padding_value=pad_token_id)
 
+        if seqlen is not None:
+            T = token_ids.size(-1)
+            assert T <= seqlen, f"token_ids size {T} > seqlen {seqlen}"
+            pad = seqlen - token_ids.size(-1) + 1  # lose 1 for shift
+            token_ids = F.pad(token_ids, (0, pad), value=pad_token_id)
+
         input_ids = token_ids[:, :-1].contiguous()
         target_ids = token_ids[:, 1:].contiguous()
 
@@ -333,7 +367,9 @@ def main(config_path: str, edit: bool, overfit: bool):
             param_group["lr"] = lr
 
         for micro_step in range(train_config.gradient_accumulation_steps):
-            input_ids, target_ids = preprocess(texts, waveforms, waveforms_lengths)
+            input_ids, target_ids = preprocess(
+                texts, waveforms, waveforms_lengths, seqlen=seqlen
+            )
 
             with torch.amp.autocast(dtype=amp_dtype, device_type="cuda", enabled=True):
                 output = model(input_ids)
@@ -376,6 +412,9 @@ def main(config_path: str, edit: bool, overfit: bool):
                 "train/lr": lr,
             }
 
+            if os.environ.get("WANDB_MODE") == "disabled":
+                print(f"{step=} {metrics}")
+
             wandb.log(
                 metrics,
                 step=step,
@@ -395,7 +434,7 @@ def main(config_path: str, edit: bool, overfit: bool):
                 )
 
                 val_input_ids, val_target_ids = preprocess(
-                    val_texts, val_waveforms, val_waveforms_lengths
+                    val_texts, val_waveforms, val_waveforms_lengths, seqlen=seqlen
                 )
 
                 with torch.no_grad():

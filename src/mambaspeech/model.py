@@ -3,22 +3,14 @@ import math
 import os
 from collections import namedtuple
 from functools import partial
-
+from typing import Literal
 import torch
 import torch.nn as nn
-from mamba_ssm.models.mixer_seq_simple import MambaLMHeadModel
 from mamba_ssm.modules.mamba_simple import Block, Mamba
 from mamba_ssm.utils.generation import GenerationMixin
-from mamba_ssm.utils.hf import load_config_hf, load_state_dict_hf
 from pydantic import BaseModel
-from torch import Tensor
-from torch.utils.data import DataLoader, Dataset, random_split
-from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # Copyright (c) 2023, Albert Gu, Tri Dao.
-
-
-
 
 
 try:
@@ -26,51 +18,14 @@ try:
 except ImportError:
     RMSNorm, layer_norm_fn, rms_norm_fn = None, None, None
 
-from dataclasses import dataclass, field
+
+from .base import BaseConfig
 
 
-class MambaSpeechConfig(BaseModel):
-    n_text_tokens: int = 256
-
-    max_duration: float = 16.0
-
-    dac_model_name: str = "44khz"
-    codebook_size: int = 1024
-    n_quantizers: int = (
-        9  # number of quantizers to model - must be <= codec.n_codebooks
-    )
-
-    d_model: int = 512
-    n_layer: int = 12
-    rms_norm: bool = True
+class MambaSpeechConfig(BaseConfig):
+    kind: Literal["mambaspeech"]
     residual_in_fp32: bool = True
     fused_add_norm: bool = True
-    pad_vocab_size_multiple: int = 8
-    dropout: float = 0.0
-
-    @property
-    def n_tokens(self):
-        return self.n_text_tokens + self.codebook_size * self.n_quantizers
-
-    @property
-    def bos_token_id(self):
-        return self.n_tokens
-
-    @property
-    def boa_token_id(self):
-        return self.n_tokens + 1
-
-    @property
-    def eos_token_id(self):
-        return self.n_tokens + 1 + 1
-
-    @property
-    def pad_token_id(self):
-        return self.n_tokens + 1 + 1 + 1
-
-    @property
-    def vocab_size(self):
-        return self.n_tokens + 1 + 1 + 1 + 1
 
 
 def create_block(

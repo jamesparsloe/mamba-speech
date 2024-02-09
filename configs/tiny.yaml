@@ -1,4 +1,5 @@
 model:
+  kind: mambaspeech
   n_quantizers: 2
 train:
   batch_size: 16

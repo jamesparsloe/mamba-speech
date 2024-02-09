@@ -212,6 +212,8 @@ codec = dac.DAC.load(dac_path).eval().to(device)
 
 checkpoint_path = "./runs/zz9cmy20/001000/model.pt"  # tiny
 checkpoint_path = "./runs/ocjnu658/001000/model.pt"  # small
+
+checkpoint_path = "./runs/uy23nemi/002750/model.pt"
 model = MambaSpeech.from_pretrained(checkpoint_path).to(device).eval()
 
 codebook_size = model.config.codebook_size
